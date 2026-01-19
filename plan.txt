@@ -1,0 +1,36 @@
+---
+name: TranscriptTurbo
+overview: "Implement an AI meeting transcription + structured summarization app: upload audio, run Whisper (or compatible) transcription, run an LLM (Claude or compatible) to produce summary/participants/decisions/action-items, show results in a clean Vite UI, and export to Word. All config via env vars; no DB details (Supabase later)."
+todos:
+  - id: backend-refactor-structure
+    content: Refactor backend into core/api/services/utils modules and keep existing endpoints working.
+    status: pending
+  - id: process-endpoint
+    content: Implement POST /api/meetings/process with audio validation, Whisper transcription, LLM summarization, and Pydantic-validated response.
+    status: pending
+  - id: docx-endpoint
+    content: Implement POST /api/meetings/docx to generate a downloadable .docx from structured meeting notes.
+    status: pending
+  - id: integration-tests
+    content: Add pytest integration tests for each endpoint with parameter validation, error handling, and success cases; mock upstream APIs.
+    status: pending
+  - id: frontend-ui
+    content: Replace Vite starter with upload/results UI and Word download integration; use VITE_API_BASE_URL.
+    status: pending
+  - id: env-and-docs
+    content: Add .env.example and PROCESS.md (including full system prompt + rationale).
+    status: pending
+---
+
+## Architecture
+
+### High-level flow
+maid
+flowchart LR
+  User-->Frontend
+  Frontend-->Backend
+  Backend-->WhisperApi
+  Backend-->LlmApi
+  Backend-->DocxBuilder
+  Backend-->Frontend
+

@@ -6,7 +6,20 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.115.6",
+  "httpx>=0.28.1",
+  "pydantic-settings>=2.10.1",
   "uvicorn[standard]>=0.34.0",
+  "python-multipart>=0.0.20",
   "pydantic>=2.10.6",
+  "python-docx>=1.2.0",
+  "miniaudio>=1.61",
+  "webrtcvad>=2.0.10",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.0.0",
+  "respx>=0.21.1",
 ]
 

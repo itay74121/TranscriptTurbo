@@ -17,5 +17,6 @@ uv run uvicorn app.main:app --reload --port 8000
 ### Endpoints
 
 - `GET /api/health` -> `{ "status": "ok" }`
-- `POST /api/transcribe` -> `{ "transcript": "<same text>" }` (placeholder)
+- `POST /api/meetings/process` -> transcribe + structured notes (Speechmatics + OpenAI)
+- `POST /api/meetings/docx` -> download meeting notes as `.docx`
 
