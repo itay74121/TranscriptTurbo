@@ -4,14 +4,18 @@ import './style.css';
 
 const API_BASE = '/api';
 
+interface FileStats {
+  size: number;
+  duration: number;
+}
+
 function App() {
   const [file, setFile] = useState<File | null>(null);
+  const [originalStats, setOriginalStats] = useState<FileStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<MeetingProcessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [downloadingDocx, setDownloadingDocx] = useState(false);
-  const [fileSize, setFileSize] = useState<number>(0);
-  const [audioDuration, setAudioDuration] = useState<number | null>(null);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -27,29 +31,42 @@ function App() {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      setFile(selectedFile);
-      setError(null);
-      setResult(null);
-      setFileSize(selectedFile.size);
-
-      // Get audio duration
+  const getAudioDuration = (file: File): Promise<number> => {
+    return new Promise((resolve, reject) => {
       const audio = new Audio();
-      const objectUrl = URL.createObjectURL(selectedFile);
+      const objectUrl = URL.createObjectURL(file);
       
       audio.addEventListener('loadedmetadata', () => {
-        setAudioDuration(audio.duration);
+        resolve(audio.duration);
         URL.revokeObjectURL(objectUrl);
       });
 
       audio.addEventListener('error', () => {
-        setAudioDuration(null);
+        reject(new Error('Failed to load audio'));
         URL.revokeObjectURL(objectUrl);
       });
 
       audio.src = objectUrl;
+    });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (!selectedFile) return;
+
+    setFile(selectedFile);
+    setError(null);
+    setResult(null);
+
+    try {
+      const duration = await getAudioDuration(selectedFile);
+      setOriginalStats({
+        size: selectedFile.size,
+        duration: duration
+      });
+    } catch (err) {
+      console.error('File processing error:', err);
+      setError('Failed to process audio file');
     }
   };
 
@@ -149,18 +166,23 @@ function App() {
               </label>
             </div>
 
-            {file && (
-              <div className="file-info">
-                <div className="file-info-item">
-                  <span className="file-info-label">File Size:</span>
-                  <span className="file-info-value">{formatFileSize(fileSize)}</span>
-                </div>
-                {audioDuration !== null && (
-                  <div className="file-info-item">
-                    <span className="file-info-label">Duration:</span>
-                    <span className="file-info-value">{formatDuration(audioDuration)}</span>
+            {originalStats && (
+              <div className="file-stats-container">
+                <div className="file-stats-comparison">
+                  <div className="stats-column">
+                    <h4 className="stats-title">File Info</h4>
+                    <div className="stats-grid">
+                      <div className="stat-item">
+                        <span className="stat-label">Size:</span>
+                        <span className="stat-value">{formatFileSize(originalStats.size)}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Duration:</span>
+                        <span className="stat-value">{formatDuration(originalStats.duration)}</span>
+                      </div>
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             )}
 
