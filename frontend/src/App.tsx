@@ -1,5 +1,9 @@
-import { useState, FormEvent } from 'react';
-import { TranscribeResponse, SummarizeResponse } from './types';
+import { useState, FormEvent, useEffect } from 'react';
+import { TranscribeResponse, SummarizeResponse, HistoryEntry, HistoryMetadata } from './types';
+import { HistoryPanel } from './components/HistoryPanel';
+import { ReuseDialog } from './components/ReuseDialog';
+import { computeFileHash } from './utils/fileHash';
+import { getHistoryEntry, saveHistoryEntry, enforceStorageLimit, getHistoryCount } from './utils/historyStorage';
 import './style.css';
 
 const API_BASE = '/api';
@@ -23,6 +27,28 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [summaryError, setSummaryError] = useState<string | null>(null);
   const [downloadingDocx, setDownloadingDocx] = useState(false);
+  
+  // History-related state
+  const [historyPanelOpen, setHistoryPanelOpen] = useState(false);
+  const [historyCount, setHistoryCount] = useState(0);
+  const [reuseDialogOpen, setReuseDialogOpen] = useState(false);
+  const [cachedEntry, setCachedEntry] = useState<HistoryEntry | null>(null);
+  const [currentFileHash, setCurrentFileHash] = useState<string | null>(null);
+  const [shouldUseCache, setShouldUseCache] = useState(false);
+
+  // Load history count on mount
+  useEffect(() => {
+    loadHistoryCount();
+  }, []);
+
+  const loadHistoryCount = async () => {
+    try {
+      const count = await getHistoryCount();
+      setHistoryCount(count);
+    } catch (error) {
+      console.error('Failed to load history count:', error);
+    }
+  };
 
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -66,6 +92,9 @@ function App() {
     setSummaryError(null);
     setTranscriptData(null);
     setSummaryData(null);
+    setShouldUseCache(false);
+    setCachedEntry(null);
+    setCurrentFileHash(null);
 
     try {
       const duration = await getAudioDuration(selectedFile);
@@ -73,6 +102,16 @@ function App() {
         size: selectedFile.size,
         duration: duration
       });
+
+      // Compute file hash and check if it exists in history
+      const fileHash = await computeFileHash(selectedFile);
+      setCurrentFileHash(fileHash);
+      
+      const existingEntry = await getHistoryEntry(fileHash);
+      if (existingEntry) {
+        setCachedEntry(existingEntry);
+        setReuseDialogOpen(true);
+      }
     } catch (err) {
       console.error('File processing error:', err);
       setError('Failed to process audio file');
@@ -82,6 +121,11 @@ function App() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     
+    // If we're using cached results, no need to process
+    if (shouldUseCache) {
+      return;
+    }
+
     if (!file) {
       setError('Please select an audio file');
       return;
@@ -92,6 +136,9 @@ function App() {
     setSummaryError(null);
     setTranscriptData(null);
     setSummaryData(null);
+
+    let transcript: TranscribeResponse | null = null;
+    let summary: SummarizeResponse | null = null;
 
     try {
       // Step 1: Transcribe the audio
@@ -108,11 +155,15 @@ function App() {
         throw new Error(errorData.error || `Transcription failed: ${transcribeResponse.status}`);
       }
 
-      const transcript: TranscribeResponse = await transcribeResponse.json();
+      transcript = await transcribeResponse.json();
       setTranscriptData(transcript);
       
       // Step 2: Summarize the transcript
       setProcessing({ transcribing: false, summarizing: true });
+      
+      if (!transcript) {
+        throw new Error('Failed to parse transcript response');
+      }
       
       try {
         const summarizeResponse = await fetch(`${API_BASE}/meetings/summarize`, {
@@ -130,11 +181,43 @@ function App() {
           throw new Error(errorData.error || `Summarization failed: ${summarizeResponse.status}`);
         }
 
-        const summary: SummarizeResponse = await summarizeResponse.json();
+        summary = await summarizeResponse.json();
         setSummaryData(summary);
       } catch (summaryErr) {
         // Summarization failed, but we keep the transcript
         setSummaryError(summaryErr instanceof Error ? summaryErr.message : 'Failed to generate summary');
+      }
+
+      // Save to history after successful processing
+      if (transcript && currentFileHash && originalStats) {
+        try {
+          const metadata = calculateMetadata(transcript, summary);
+          const historyEntry: HistoryEntry = {
+            fileHash: currentFileHash,
+            fileName: file.name,
+            fileSize: originalStats.size,
+            duration: originalStats.duration,
+            processedAt: Date.now(),
+            transcript,
+            summary,
+            metadata
+          };
+          
+          console.log('Saving to history:', {
+            fileName: file.name,
+            hasSummary: !!summary,
+            summary: summary
+          });
+          
+          await saveHistoryEntry(historyEntry);
+          await enforceStorageLimit(50);
+          await loadHistoryCount();
+          
+          console.log('Successfully saved to history');
+        } catch (historyErr) {
+          console.error('Failed to save to history:', historyErr);
+          // Don't show error to user, this is not critical
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to transcribe meeting');
@@ -195,11 +278,82 @@ function App() {
     return colors[index];
   };
 
+  const calculateMetadata = (transcript: TranscribeResponse, summary: SummarizeResponse | null): HistoryMetadata => {
+    const uniqueSpeakers = new Set(transcript.segments.map(s => s.speaker));
+    const wordCount = transcript.transcript_text.split(/\s+/).filter(w => w.length > 0).length;
+    return {
+      transcriptionModel: transcript.transcription_model,
+      llmModel: summary?.llm_model || null,
+      speakerCount: uniqueSpeakers.size,
+      wordCount
+    };
+  };
+
+  const handleLoadCachedEntry = (entry: HistoryEntry) => {
+    console.log('Loading cached entry:', entry);
+    console.log('Summary in cached entry:', entry.summary);
+    
+    // Clear all error states
+    setError(null);
+    setSummaryError(null);
+    
+    // Load transcript and summary
+    setTranscriptData(entry.transcript);
+    setSummaryData(entry.summary);
+    
+    // Clear file selection
+    setFile(null);
+    
+    // Set file stats
+    setOriginalStats({
+      size: entry.fileSize,
+      duration: entry.duration
+    });
+    
+    loadHistoryCount();
+  };
+
+  const handleUseCacheFromDialog = () => {
+    if (cachedEntry) {
+      setShouldUseCache(true);
+      handleLoadCachedEntry(cachedEntry);
+    }
+    setReuseDialogOpen(false);
+  };
+
+  const handleReprocessFromDialog = () => {
+    setShouldUseCache(false);
+    setCachedEntry(null);
+    setReuseDialogOpen(false);
+  };
+
+  const handleCancelDialog = () => {
+    setReuseDialogOpen(false);
+    setFile(null);
+    setOriginalStats(null);
+    setCurrentFileHash(null);
+    setCachedEntry(null);
+  };
+
   return (
     <div className="app">
       <header className="header">
-        <h1>TranscriptTurbo</h1>
-        <p className="subtitle">AI-Powered Meeting Transcription & Summarization</p>
+        <div className="header-content">
+          <div className="header-title">
+            <h1>TranscriptTurbo</h1>
+            <p className="subtitle">AI-Powered Meeting Transcription & Summarization</p>
+          </div>
+          <button 
+            className="history-button"
+            onClick={() => setHistoryPanelOpen(true)}
+            title="View processing history"
+          >
+            <span className="history-icon">📋</span>
+            {historyCount > 0 && (
+              <span className="history-badge">{historyCount}</span>
+            )}
+          </button>
+        </div>
       </header>
 
       <main className="main">
@@ -396,6 +550,20 @@ function App() {
       <footer className="footer">
         <p>Powered by AI - Speechmatics Transcription & LLM Summarization</p>
       </footer>
+
+      <HistoryPanel 
+        isOpen={historyPanelOpen}
+        onClose={() => setHistoryPanelOpen(false)}
+        onLoadEntry={handleLoadCachedEntry}
+      />
+
+      <ReuseDialog
+        isOpen={reuseDialogOpen}
+        entry={cachedEntry}
+        onUseCache={handleUseCacheFromDialog}
+        onReprocess={handleReprocessFromDialog}
+        onCancel={handleCancelDialog}
+      />
     </div>
   );
 }

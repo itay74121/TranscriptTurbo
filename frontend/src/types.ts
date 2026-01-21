@@ -53,3 +53,21 @@ export interface MeetingProcessResponse {
   model_info: ModelInfo;
   trim: TrimInfo;
 }
+
+export interface HistoryMetadata {
+  transcriptionModel: string;
+  llmModel: string | null;
+  speakerCount: number;
+  wordCount: number;
+}
+
+export interface HistoryEntry {
+  fileHash: string;
+  fileName: string;
+  fileSize: number;
+  duration: number;
+  processedAt: number;
+  transcript: TranscribeResponse;
+  summary: SummarizeResponse | null;
+  metadata: HistoryMetadata;
+}
