@@ -7,6 +7,7 @@ export interface ActionItem {
 export interface MeetingNotes {
   summary: string;
   participants: string[];
+  conclusions: string[];
   decisions: string[];
   action_items: ActionItem[];
 }
@@ -61,6 +62,12 @@ export interface HistoryMetadata {
   wordCount: number;
 }
 
+export interface SummaryVersion {
+  summary: SummarizeResponse;
+  generatedAt: number;
+  version: number;
+}
+
 export interface HistoryEntry {
   fileHash: string;
   fileName: string;
@@ -68,6 +75,6 @@ export interface HistoryEntry {
   duration: number;
   processedAt: number;
   transcript: TranscribeResponse;
-  summary: SummarizeResponse | null;
+  summaries: SummaryVersion[];
   metadata: HistoryMetadata;
 }

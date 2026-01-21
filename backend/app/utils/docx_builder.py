@@ -23,6 +23,13 @@ def build_meeting_docx(req: MeetingDocxRequest) -> bytes:
     else:
         doc.add_paragraph("—")
 
+    doc.add_heading("Conclusions", level=2)
+    if req.notes.conclusions:
+        for c in req.notes.conclusions:
+            doc.add_paragraph(c, style="List Bullet")
+    else:
+        doc.add_paragraph("—")
+
     doc.add_heading("Decisions", level=2)
     if req.notes.decisions:
         for d in req.notes.decisions:

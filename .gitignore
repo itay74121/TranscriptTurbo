@@ -16,7 +16,7 @@ env/
 
 # Env files
 .env
-.env.*
+
 
 # --- Node / Vite ---
 node_modules/

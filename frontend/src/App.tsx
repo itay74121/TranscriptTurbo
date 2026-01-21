@@ -1,9 +1,9 @@
 import { useState, FormEvent, useEffect } from 'react';
-import { TranscribeResponse, SummarizeResponse, HistoryEntry, HistoryMetadata } from './types';
+import { TranscribeResponse, SummarizeResponse, HistoryEntry, HistoryMetadata, SummaryVersion } from './types';
 import { HistoryPanel } from './components/HistoryPanel';
 import { ReuseDialog } from './components/ReuseDialog';
 import { computeFileHash } from './utils/fileHash';
-import { getHistoryEntry, saveHistoryEntry, enforceStorageLimit, getHistoryCount } from './utils/historyStorage';
+import { getHistoryEntry, saveHistoryEntry, enforceStorageLimit, getHistoryCount, addSummaryVersion } from './utils/historyStorage';
 import './style.css';
 
 const API_BASE = '/api';
@@ -35,6 +35,10 @@ function App() {
   const [cachedEntry, setCachedEntry] = useState<HistoryEntry | null>(null);
   const [currentFileHash, setCurrentFileHash] = useState<string | null>(null);
   const [shouldUseCache, setShouldUseCache] = useState(false);
+  
+  // Summary version tracking
+  const [allSummaryVersions, setAllSummaryVersions] = useState<SummaryVersion[]>([]);
+  const [currentSummaryVersion, setCurrentSummaryVersion] = useState<number>(1);
 
   // Load history count on mount
   useEffect(() => {
@@ -95,6 +99,8 @@ function App() {
     setShouldUseCache(false);
     setCachedEntry(null);
     setCurrentFileHash(null);
+    setAllSummaryVersions([]);
+    setCurrentSummaryVersion(1);
 
     try {
       const duration = await getAudioDuration(selectedFile);
@@ -136,6 +142,8 @@ function App() {
     setSummaryError(null);
     setTranscriptData(null);
     setSummaryData(null);
+    setAllSummaryVersions([]);
+    setCurrentSummaryVersion(1);
 
     let transcript: TranscribeResponse | null = null;
     let summary: SummarizeResponse | null = null;
@@ -192,6 +200,17 @@ function App() {
       if (transcript && currentFileHash && originalStats) {
         try {
           const metadata = calculateMetadata(transcript, summary);
+          
+          // Create version 1 summary if summary exists
+          const summaries: SummaryVersion[] = [];
+          if (summary) {
+            summaries.push({
+              summary,
+              generatedAt: Date.now(),
+              version: 1
+            });
+          }
+          
           const historyEntry: HistoryEntry = {
             fileHash: currentFileHash,
             fileName: file.name,
@@ -199,7 +218,7 @@ function App() {
             duration: originalStats.duration,
             processedAt: Date.now(),
             transcript,
-            summary,
+            summaries,
             metadata
           };
           
@@ -210,6 +229,11 @@ function App() {
           });
           
           await saveHistoryEntry(historyEntry);
+          
+          // Update local state with summary versions
+          setAllSummaryVersions(summaries);
+          setCurrentSummaryVersion(summaries.length > 0 ? 1 : 0);
+          
           await enforceStorageLimit(50);
           await loadHistoryCount();
           
@@ -291,24 +315,45 @@ function App() {
 
   const handleLoadCachedEntry = (entry: HistoryEntry) => {
     console.log('Loading cached entry:', entry);
-    console.log('Summary in cached entry:', entry.summary);
+    console.log('Summaries in cached entry:', entry.summaries);
     
     // Clear all error states
     setError(null);
     setSummaryError(null);
     
-    // Load transcript and summary
+    // Load transcript
     setTranscriptData(entry.transcript);
-    setSummaryData(entry.summary);
     
-    // Clear file selection
-    setFile(null);
+    // Load summary versions
+    const summaries = entry.summaries || [];
+    setAllSummaryVersions(summaries);
+    
+    // Set current version to latest (highest version number)
+    if (summaries.length > 0) {
+      const latestVersion = Math.max(...summaries.map(s => s.version));
+      setCurrentSummaryVersion(latestVersion);
+      const latestSummary = summaries.find(s => s.version === latestVersion);
+      setSummaryData(latestSummary?.summary || null);
+    } else {
+      setCurrentSummaryVersion(0);
+      setSummaryData(null);
+    }
+    
+    // Create a minimal file-like object for display purposes (we don't have the actual File object from history)
+    // This ensures the UI renders correctly with the filename displayed
+    const fileForDisplay = {
+      name: entry.fileName
+    } as File;
+    setFile(fileForDisplay);
     
     // Set file stats
     setOriginalStats({
       size: entry.fileSize,
       duration: entry.duration
     });
+    
+    // Set current file hash for potential reprocessing
+    setCurrentFileHash(entry.fileHash);
     
     loadHistoryCount();
   };
@@ -333,6 +378,73 @@ function App() {
     setOriginalStats(null);
     setCurrentFileHash(null);
     setCachedEntry(null);
+  };
+
+  const handleRegenerateSummary = async () => {
+    if (!transcriptData || !currentFileHash) {
+      setError('Cannot regenerate summary: transcript or file hash missing');
+      return;
+    }
+
+    setProcessing({ transcribing: false, summarizing: true });
+    setSummaryError(null);
+
+    try {
+      const summarizeResponse = await fetch(`${API_BASE}/meetings/summarize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          transcript: transcriptData.transcript_text,
+        }),
+      });
+
+      if (!summarizeResponse.ok) {
+        const errorData = await summarizeResponse.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || `Summarization failed: ${summarizeResponse.status}`);
+      }
+
+      const newSummary = await summarizeResponse.json();
+      
+      // Determine next version number
+      const nextVersion = allSummaryVersions.length > 0 
+        ? Math.max(...allSummaryVersions.map(s => s.version)) + 1
+        : 1;
+
+      // Create new summary version
+      const newSummaryVersion: SummaryVersion = {
+        summary: newSummary,
+        generatedAt: Date.now(),
+        version: nextVersion
+      };
+
+      // Add to local state
+      const updatedVersions = [...allSummaryVersions, newSummaryVersion];
+      setAllSummaryVersions(updatedVersions);
+      setCurrentSummaryVersion(nextVersion);
+      setSummaryData(newSummary);
+
+      // Save to history
+      try {
+        await addSummaryVersion(currentFileHash, newSummaryVersion);
+      } catch (historyErr) {
+        console.error('Failed to save summary version to history:', historyErr);
+        // Don't show error to user, this is not critical
+      }
+    } catch (err) {
+      setSummaryError(err instanceof Error ? err.message : 'Failed to regenerate summary');
+    } finally {
+      setProcessing({ transcribing: false, summarizing: false });
+    }
+  };
+
+  const handleVersionChange = (version: number) => {
+    const selectedVersion = allSummaryVersions.find(s => s.version === version);
+    if (selectedVersion) {
+      setCurrentSummaryVersion(version);
+      setSummaryData(selectedVersion.summary);
+    }
   };
 
   return (
@@ -439,19 +551,70 @@ function App() {
           <div className="results">
             <div className="results-header">
               <h2>Meeting Analysis</h2>
-              {summaryData && (
-                <button 
-                  onClick={handleDownloadDocx}
-                  disabled={downloadingDocx}
-                  className="btn btn-secondary"
-                >
-                  {downloadingDocx ? 'Generating...' : 'Download as Word'}
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                {transcriptData && (
+                  <button 
+                    onClick={handleRegenerateSummary}
+                    disabled={processing.summarizing}
+                    className="btn btn-secondary"
+                    title="Regenerate AI summary"
+                  >
+                    {processing.summarizing ? 'Generating...' : 'Run AI Again'}
+                  </button>
+                )}
+                {summaryData && (
+                  <button 
+                    onClick={handleDownloadDocx}
+                    disabled={downloadingDocx}
+                    className="btn btn-secondary"
+                  >
+                    {downloadingDocx ? 'Generating...' : 'Download as Word'}
+                  </button>
+                )}
+              </div>
             </div>
 
             {summaryData && (
               <>
+                {allSummaryVersions.length > 1 && (
+                  <section className="result-section" style={{ marginBottom: '20px' }}>
+                    <label htmlFor="version-selector" style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                      Summary Version:
+                    </label>
+                    <select
+                      id="version-selector"
+                      value={currentSummaryVersion}
+                      onChange={(e) => handleVersionChange(Number(e.target.value))}
+                      style={{
+                        padding: '8px 12px',
+                        borderRadius: '4px',
+                        border: '1px solid #ddd',
+                        fontSize: '14px',
+                        minWidth: '250px',
+                        backgroundColor: 'white',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      {allSummaryVersions
+                        .sort((a, b) => b.version - a.version)
+                        .map((version) => {
+                          const date = new Date(version.generatedAt);
+                          const dateStr = date.toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                            hour: 'numeric',
+                            minute: '2-digit'
+                          });
+                          return (
+                            <option key={version.version} value={version.version}>
+                              Version {version.version} ({dateStr})
+                            </option>
+                          );
+                        })}
+                    </select>
+                  </section>
+                )}
                 <section className="result-section">
                   <h3>Summary</h3>
                   <div className="card">
@@ -466,6 +629,19 @@ function App() {
                       <ul className="participants-list">
                         {summaryData.notes.participants.map((participant, idx) => (
                           <li key={idx}>{participant}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </section>
+                )}
+
+                {summaryData.notes.conclusions.length > 0 && (
+                  <section className="result-section">
+                    <h3>Conclusions</h3>
+                    <div className="card">
+                      <ul className="conclusions-list">
+                        {summaryData.notes.conclusions.map((conclusion, idx) => (
+                          <li key={idx}>{conclusion}</li>
                         ))}
                       </ul>
                     </div>
@@ -541,6 +717,7 @@ function App() {
               <small>
                 Transcription: {transcriptData.transcription_model}
                 {summaryData && ` | Summary: ${summaryData.llm_model}`}
+                {allSummaryVersions.length > 1 && ` | ${allSummaryVersions.length} version${allSummaryVersions.length !== 1 ? 's' : ''} available`}
               </small>
             </div>
           </div>

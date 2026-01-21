@@ -20,6 +20,7 @@ MEETING_NOTES_JSON_SCHEMA: dict = {
     "properties": {
         "summary": {"type": "string"},
         "participants": {"type": "array", "items": {"type": "string"}},
+        "conclusions": {"type": "array", "items": {"type": "string"}},
         "decisions": {"type": "array", "items": {"type": "string"}},
         "action_items": {
             "type": "array",
@@ -35,7 +36,7 @@ MEETING_NOTES_JSON_SCHEMA: dict = {
             },
         },
     },
-    "required": ["summary", "participants", "decisions", "action_items"],
+    "required": ["summary", "participants", "conclusions", "decisions", "action_items"],
 }
 
 

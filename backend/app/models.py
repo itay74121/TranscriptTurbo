@@ -14,6 +14,7 @@ class ActionItem(BaseModel):
 class MeetingNotes(BaseModel):
     summary: str = Field(min_length=1)
     participants: list[str] = Field(default_factory=list)
+    conclusions: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     action_items: list[ActionItem] = Field(default_factory=list)
 
