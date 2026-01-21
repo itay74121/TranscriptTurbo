@@ -59,7 +59,7 @@ async def process_meeting(
         elif trim_silence and frontend_trimmed:
             trim_info = TrimInfo(requested=True, applied=True,
                                  method="frontend_ffmpeg_wasm", error=None)
-
+        print('key: ' + settings.speechmatics_api_key)
         speech = SpeechmaticsClient(
             base_url=settings.speechmatics_base_url,
             api_key=settings.speechmatics_api_key,
@@ -74,7 +74,7 @@ async def process_meeting(
         system_prompt_path = Path(__file__).resolve(
         ).parents[2] / "prompts" / "meeting_summary_system.txt"
         system_prompt = system_prompt_path.read_text(encoding="utf-8")
-
+        print(f'key2: {settings.openai_api_key}')
         summarizer = OpenAISummarizer(
             base_url=settings.openai_base_url,
             api_key=settings.openai_api_key,

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
-import httpx
+from openai import AsyncOpenAI
 
 from app.core.errors import BadRequestError, UpstreamError
 from app.models import MeetingNotes
@@ -45,15 +44,19 @@ class OpenAISummarizer:
         if not api_key:
             raise BadRequestError("OPENAI_API_KEY is not configured.")
 
-        self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        # Ensure base_url ends with /v1 for OpenAI SDK
+        if base_url and not base_url.endswith("/v1"):
+            base_url = f"{base_url.rstrip('/')}/v1"
+
+        self._client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url if base_url else None,
+            timeout=timeout_seconds,
+        )
         self._model = model
-        self._timeout = timeout_seconds
         self._system_prompt = system_prompt
 
     async def summarize(self, *, transcript: str, language_hint: str | None = None) -> OpenAIResult:
-        url = f"{self._base_url}/v1/responses"
-
         user_prompt = (
             "Transcript:\n"
             "-----\n"
@@ -63,52 +66,42 @@ class OpenAISummarizer:
         if language_hint:
             user_prompt = f"Language hint: {language_hint}\n\n" + user_prompt
 
-        payload = {
-            "model": self._model,
-            "input": [
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "MeetingNotes",
-                    "strict": True,
-                    "schema": MEETING_NOTES_JSON_SCHEMA,
-                }
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=payload)
-
-        if resp.status_code != 200:
-            raise UpstreamError(f"OpenAI summarize failed ({resp.status_code}).", status_code=resp.status_code)
-
-        data = resp.json()
-        # Expected: output[0].content[0] is the structured object.
         try:
-            output = data["output"]
-            msg = next(item for item in output if item.get("type") == "message")
-            content = msg["content"]
-            obj = content[0]
-        except Exception as e:  # noqa: BLE001 - keep robust for upstream changes
-            raise UpstreamError(f"OpenAI response parsing failed: {e!s}")
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "MeetingNotes",
+                        "strict": True,
+                        "schema": MEETING_NOTES_JSON_SCHEMA,
+                    },
+                },
+            )
+        except Exception as e:
+            raise UpstreamError(f"OpenAI API call failed: {e!s}")
 
-        # If refusal, surface it cleanly
-        if isinstance(obj, dict) and obj.get("type") == "refusal":
-            raise UpstreamError(f"OpenAI refused: {obj.get('refusal', 'unknown refusal')}")
+        # Extract the structured response
+        choice = response.choices[0]
 
-        # Ensure dict; if string, try JSON parse (defensive)
-        if isinstance(obj, str):
-            try:
-                obj = json.loads(obj)
-            except Exception as e:  # noqa: BLE001
-                raise UpstreamError(f"OpenAI returned non-JSON content: {e!s}")
+        # Check for refusal
+        if choice.finish_reason == "content_filter" or (hasattr(choice.message, "refusal") and choice.message.refusal):
+            refusal_msg = getattr(
+                choice.message, "refusal", "Content filtered")
+            raise UpstreamError(f"OpenAI refused: {refusal_msg}")
 
-        notes = MeetingNotes.model_validate(obj)
-        return OpenAIResult(notes=notes, llm_model=self._model)
+        # Parse the JSON content
+        content = choice.message.content
+        if not content:
+            raise UpstreamError("OpenAI returned empty content")
 
-    def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key}"}
+        try:
+            notes = MeetingNotes.model_validate_json(content)
+        except Exception as e:
+            raise UpstreamError(f"Failed to parse OpenAI response: {e!s}")
 
+        return OpenAIResult(notes=notes, llm_model=response.model)
