@@ -992,6 +992,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "python-docx" },
     { name = "python-multipart" },
+    { name = "respx" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "webrtcvad" },
 ]
@@ -1015,6 +1016,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "respx", specifier = ">=0.22.0" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "webrtcvad", specifier = ">=2.0.10" },
