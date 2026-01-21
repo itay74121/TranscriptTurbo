@@ -30,6 +30,34 @@ class TrimInfo(BaseModel):
     error: Optional[str] = None
 
 
+class TranscriptSegment(BaseModel):
+    """Represents a segment of speech by one speaker"""
+    speaker: str = Field(description="Speaker label, e.g., 'S1', 'S2', or 'UU' for unknown")
+    text: str
+    start_time: Optional[float] = Field(default=None, description="Start time in seconds")
+    end_time: Optional[float] = Field(default=None, description="End time in seconds")
+
+
+class TranscribeResponse(BaseModel):
+    """Response from /meetings/transcribe endpoint"""
+    transcript_text: str = Field(description="Full plain text transcript")
+    segments: list[TranscriptSegment] = Field(default_factory=list, description="Speaker-labeled segments")
+    transcription_model: str
+    trim: TrimInfo
+
+
+class SummarizeRequest(BaseModel):
+    """Request to /meetings/summarize endpoint"""
+    transcript: str = Field(min_length=1, description="Transcript text to summarize")
+    language: Optional[str] = Field(default=None, description="Language hint for better summarization")
+
+
+class SummarizeResponse(BaseModel):
+    """Response from /meetings/summarize endpoint"""
+    notes: MeetingNotes
+    llm_model: str
+
+
 class MeetingProcessResponse(BaseModel):
     transcript: str
     notes: MeetingNotes

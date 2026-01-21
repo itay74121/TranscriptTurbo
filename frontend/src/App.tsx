@@ -1,5 +1,5 @@
 import { useState, FormEvent } from 'react';
-import { MeetingProcessResponse } from './types';
+import { TranscribeResponse, SummarizeResponse } from './types';
 import './style.css';
 
 const API_BASE = '/api';
@@ -9,12 +9,19 @@ interface FileStats {
   duration: number;
 }
 
+interface ProcessingState {
+  transcribing: boolean;
+  summarizing: boolean;
+}
+
 function App() {
   const [file, setFile] = useState<File | null>(null);
   const [originalStats, setOriginalStats] = useState<FileStats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<MeetingProcessResponse | null>(null);
+  const [processing, setProcessing] = useState<ProcessingState>({ transcribing: false, summarizing: false });
+  const [transcriptData, setTranscriptData] = useState<TranscribeResponse | null>(null);
+  const [summaryData, setSummaryData] = useState<SummarizeResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const [downloadingDocx, setDownloadingDocx] = useState(false);
 
   const formatFileSize = (bytes: number): string => {
@@ -56,7 +63,9 @@ function App() {
 
     setFile(selectedFile);
     setError(null);
-    setResult(null);
+    setSummaryError(null);
+    setTranscriptData(null);
+    setSummaryData(null);
 
     try {
       const duration = await getAudioDuration(selectedFile);
@@ -78,35 +87,64 @@ function App() {
       return;
     }
 
-    setLoading(true);
+    setProcessing({ transcribing: true, summarizing: false });
     setError(null);
-    setResult(null);
+    setSummaryError(null);
+    setTranscriptData(null);
+    setSummaryData(null);
 
     try {
+      // Step 1: Transcribe the audio
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetch(`${API_BASE}/meetings/process`, {
+      const transcribeResponse = await fetch(`${API_BASE}/meetings/transcribe`, {
         method: 'POST',
         body: formData,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || `Server error: ${response.status}`);
+      if (!transcribeResponse.ok) {
+        const errorData = await transcribeResponse.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || `Transcription failed: ${transcribeResponse.status}`);
       }
 
-      const data: MeetingProcessResponse = await response.json();
-      setResult(data);
+      const transcript: TranscribeResponse = await transcribeResponse.json();
+      setTranscriptData(transcript);
+      
+      // Step 2: Summarize the transcript
+      setProcessing({ transcribing: false, summarizing: true });
+      
+      try {
+        const summarizeResponse = await fetch(`${API_BASE}/meetings/summarize`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            transcript: transcript.transcript_text,
+          }),
+        });
+
+        if (!summarizeResponse.ok) {
+          const errorData = await summarizeResponse.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(errorData.error || `Summarization failed: ${summarizeResponse.status}`);
+        }
+
+        const summary: SummarizeResponse = await summarizeResponse.json();
+        setSummaryData(summary);
+      } catch (summaryErr) {
+        // Summarization failed, but we keep the transcript
+        setSummaryError(summaryErr instanceof Error ? summaryErr.message : 'Failed to generate summary');
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to process meeting');
+      setError(err instanceof Error ? err.message : 'Failed to transcribe meeting');
     } finally {
-      setLoading(false);
+      setProcessing({ transcribing: false, summarizing: false });
     }
   };
 
   const handleDownloadDocx = async () => {
-    if (!result) return;
+    if (!transcriptData || !summaryData) return;
 
     setDownloadingDocx(true);
     try {
@@ -117,8 +155,8 @@ function App() {
         },
         body: JSON.stringify({
           meeting_title: file?.name.replace(/\.[^/.]+$/, '') || 'Meeting',
-          transcript: result.transcript,
-          notes: result.notes,
+          transcript: transcriptData.transcript_text,
+          notes: summaryData.notes,
         }),
       });
 
@@ -142,6 +180,21 @@ function App() {
     }
   };
 
+  const getSpeakerColor = (speaker: string): string => {
+    const colors = [
+      '#3b82f6', // blue
+      '#10b981', // green
+      '#f59e0b', // amber
+      '#ef4444', // red
+      '#8b5cf6', // purple
+      '#ec4899', // pink
+      '#14b8a6', // teal
+      '#f97316', // orange
+    ];
+    const index = speaker.charCodeAt(speaker.length - 1) % colors.length;
+    return colors[index];
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -158,7 +211,7 @@ function App() {
                 id="audio-file"
                 accept=".mp3,.wav"
                 onChange={handleFileChange}
-                disabled={loading}
+                disabled={processing.transcribing || processing.summarizing}
                 className="file-input"
               />
               <label htmlFor="audio-file" className="file-label">
@@ -188,18 +241,30 @@ function App() {
 
             <button 
               type="submit" 
-              disabled={!file || loading}
+              disabled={!file || processing.transcribing || processing.summarizing}
               className="btn btn-primary"
             >
-              {loading ? 'Processing...' : 'Process Meeting'}
+              {processing.transcribing 
+                ? 'Transcribing...' 
+                : processing.summarizing 
+                ? 'Summarizing...' 
+                : 'Process Meeting'}
             </button>
           </form>
 
-          {loading && (
+          {processing.transcribing && (
             <div className="loading">
               <div className="spinner"></div>
-              <p>Transcribing and analyzing your meeting...</p>
+              <p>Transcribing your meeting audio...</p>
               <p className="loading-subtext">This may take a minute</p>
+            </div>
+          )}
+
+          {processing.summarizing && (
+            <div className="loading">
+              <div className="spinner"></div>
+              <p>Generating meeting summary...</p>
+              <p className="loading-subtext">Almost done!</p>
             </div>
           )}
 
@@ -208,88 +273,120 @@ function App() {
               <strong>Error:</strong> {error}
             </div>
           )}
+
+          {summaryError && transcriptData && (
+            <div className="error" style={{ backgroundColor: '#fef3c7', color: '#92400e', border: '1px solid #fbbf24' }}>
+              <strong>Note:</strong> Summary generation failed ({summaryError}), but transcript is available below.
+            </div>
+          )}
         </div>
 
-        {result && (
+        {transcriptData && (
           <div className="results">
             <div className="results-header">
               <h2>Meeting Analysis</h2>
-              <button 
-                onClick={handleDownloadDocx}
-                disabled={downloadingDocx}
-                className="btn btn-secondary"
-              >
-                {downloadingDocx ? 'Generating...' : 'Download as Word'}
-              </button>
+              {summaryData && (
+                <button 
+                  onClick={handleDownloadDocx}
+                  disabled={downloadingDocx}
+                  className="btn btn-secondary"
+                >
+                  {downloadingDocx ? 'Generating...' : 'Download as Word'}
+                </button>
+              )}
             </div>
 
+            {summaryData && (
+              <>
+                <section className="result-section">
+                  <h3>Summary</h3>
+                  <div className="card">
+                    <p className="summary-text">{summaryData.notes.summary}</p>
+                  </div>
+                </section>
+
+                {summaryData.notes.participants.length > 0 && (
+                  <section className="result-section">
+                    <h3>Participants</h3>
+                    <div className="card">
+                      <ul className="participants-list">
+                        {summaryData.notes.participants.map((participant, idx) => (
+                          <li key={idx}>{participant}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </section>
+                )}
+
+                {summaryData.notes.decisions.length > 0 && (
+                  <section className="result-section">
+                    <h3>Decisions Made</h3>
+                    <div className="card">
+                      <ul className="decisions-list">
+                        {summaryData.notes.decisions.map((decision, idx) => (
+                          <li key={idx}>{decision}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </section>
+                )}
+
+                {summaryData.notes.action_items.length > 0 && (
+                  <section className="result-section">
+                    <h3>Action Items</h3>
+                    <div className="card">
+                      <ul className="action-items-list">
+                        {summaryData.notes.action_items.map((item, idx) => (
+                          <li key={idx}>
+                            <div className="action-item">
+                              <span className="action-item-text">{item.item}</span>
+                              {item.owner && (
+                                <span className="action-item-owner">👤 {item.owner}</span>
+                              )}
+                              {item.due_date && (
+                                <span className="action-item-date">📅 {item.due_date}</span>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
+
             <section className="result-section">
-              <h3>Summary</h3>
-              <div className="card">
-                <p className="summary-text">{result.notes.summary}</p>
-              </div>
-            </section>
-
-            {result.notes.participants.length > 0 && (
-              <section className="result-section">
-                <h3>Participants</h3>
-                <div className="card">
-                  <ul className="participants-list">
-                    {result.notes.participants.map((participant, idx) => (
-                      <li key={idx}>{participant}</li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-            )}
-
-            {result.notes.decisions.length > 0 && (
-              <section className="result-section">
-                <h3>Decisions Made</h3>
-                <div className="card">
-                  <ul className="decisions-list">
-                    {result.notes.decisions.map((decision, idx) => (
-                      <li key={idx}>{decision}</li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-            )}
-
-            {result.notes.action_items.length > 0 && (
-              <section className="result-section">
-                <h3>Action Items</h3>
-                <div className="card">
-                  <ul className="action-items-list">
-                    {result.notes.action_items.map((item, idx) => (
-                      <li key={idx}>
-                        <div className="action-item">
-                          <span className="action-item-text">{item.item}</span>
-                          {item.owner && (
-                            <span className="action-item-owner">👤 {item.owner}</span>
-                          )}
-                          {item.due_date && (
-                            <span className="action-item-date">📅 {item.due_date}</span>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </section>
-            )}
-
-            <section className="result-section">
-              <h3>Full Transcript</h3>
+              <h3>Transcript with Speakers</h3>
               <div className="card transcript">
-                <pre className="transcript-text">{result.transcript}</pre>
+                {transcriptData.segments.length > 0 ? (
+                  <div className="transcript-segments">
+                    {transcriptData.segments.map((segment, idx) => (
+                      <div key={idx} className="transcript-segment" style={{ marginBottom: '12px' }}>
+                        <span 
+                          className="speaker-label" 
+                          style={{ 
+                            color: getSpeakerColor(segment.speaker),
+                            fontWeight: 'bold',
+                            marginRight: '8px'
+                          }}
+                        >
+                          [{segment.speaker}]
+                        </span>
+                        <span className="segment-text">{segment.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <pre className="transcript-text">{transcriptData.transcript_text}</pre>
+                )}
               </div>
             </section>
 
             <div className="model-info">
               <small>
-                Transcription: {result.model_info.transcription_model} | 
-                Summary: {result.model_info.llm_model}
+                Transcription: {transcriptData.transcription_model}
+                {summaryData && ` | Summary: ${summaryData.llm_model}`}
               </small>
             </div>
           </div>
@@ -297,7 +394,7 @@ function App() {
       </main>
 
       <footer className="footer">
-        <p>Powered by AI - Whisper Transcription & LLM Summarization</p>
+        <p>Powered by AI - Speechmatics Transcription & LLM Summarization</p>
       </footer>
     </div>
   );
